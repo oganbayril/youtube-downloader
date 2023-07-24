@@ -1,5 +1,5 @@
 from tkinter import *
-from tkinter.ttk import *
+from tkinter.ttk import Progressbar, Button
 from tkinter import messagebox
 from pytube import YouTube
 import os
