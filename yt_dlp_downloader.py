@@ -2,10 +2,10 @@ import customtkinter as tk
 import yt_dlp as ydl
 import os
 import tempfile
-from multiprocessing import Queue
+from multiprocessing import Manager
+import threading
 import re
 import subprocess
-import threading
 from CTkMessagebox import CTkMessagebox as messagebox
 import concurrent.futures
 
@@ -45,9 +45,6 @@ class SilentLogger:
         pass
     
 class Download:
-    def __init__(self):
-        self.download_progress = {"video": 0, "audio": 0, "merge": 0}
-    
     def extract_data(self, url):
         ydl_opts = {"quiet": True,
                     "logger": SilentLogger()}
@@ -90,54 +87,30 @@ class Download:
         except Exception as e:
             return e
     
-    def progress_hook_v(self, d):
-        #print("test")
-        #if not self.is_downloading:
-            #root.download_button.configure(text="Download", state="normal", command=root.start_extract)
-            #raise Exception("Download cancelled.") # Raise an exception to stop the download which will be caught in the download function, displaying "Download cancelled" in the GUI
-        print("hU")
+    def progress_hook_v(self, d, queue, download_progress):
+        #print("HAHEWQHYEB")
         if d["status"] == "downloading":
             raw_progress = d["_percent_str"]
             progress_clean = re.sub(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])', '', raw_progress) # Get rid of ANSI escape sequences (color codes)
             try:
                 progress = float(progress_clean.strip().replace('%', ''))
                 if "temp_video" in d["filename"]:
-                    self.download_progress["video"] = progress
+                    download_progress["video"] = progress
                 elif "temp_audio" in d["filename"]:
-                    self.download_progress["audio"] = progress
-
+                    download_progress["audio"] = progress
+                
                 total_progress = (
-                    DOWNLOAD_WEIGHT * ((self.download_progress["video"] + self.download_progress["audio"]) / 2)
-                    + MERGE_WEIGHT * self.download_progress["merge"]
+                    DOWNLOAD_WEIGHT * ((download_progress["video"] + download_progress["audio"]) / 2)
                 )
-                #root.update_progress_v(total_progress / 100)
-                #return total_progress / 100
-                print(total_progress / 100)
-                #queue.put(total_progress)
+                
+                #print(total_progress)
+                queue.put(total_progress / 100)
 
             except ValueError:
                 return
-        
-    def progress_hook_a(self, d):
-        #if not self.is_downloading:
-            #root.download_button.configure(text="Download", state="normal", command=root.start_extract)
-            #raise Exception("Download cancelled.") # Same as above, raise an exception to stop the download, displaying "Download cancelled" in the GUI
-        
-        if d["status"] == "downloading":
-            raw_progress = d["_percent_str"]
-            progress_clean = re.sub(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])', '', raw_progress) # Same as above
-            try:
-                progress = float(progress_clean.strip().replace('%', ''))
-                #root.gui.update_progress_a(progress / 100)
-                #return progress / 100
-                print(progress / 100)
 
-            except ValueError:
-                return
-        
-    #TODO: FIX THIS
-    def download_video(self, stream_map, stream, link, output_path):
-        print(stream_map[stream])
+    def download_video(self, stream_map, stream, link, output_path, queue):
+        download_progress = {"video": 0, "audio": 0}
         try:
             # Download only audio if the stream is an audio stream
             if stream == "Audio":
@@ -147,7 +120,7 @@ class Download:
                     "outtmpl": f"{output_path}.mp3",  # Save as mp3
                     "quiet": True,
                     "logger": SilentLogger(),
-                    #"progress_hooks": [self.progress_hook_a_stream],
+                    "progress_hooks": [lambda d: self.progress_hook_a_stream],
                     'noprogress': True
                 }
                 with ydl.YoutubeDL(audio_opts) as audio_ydl:
@@ -170,41 +143,37 @@ class Download:
                         "outtmpl": video_temp_path,  # Temporary file for video
                         "quiet": True,
                         "logger": SilentLogger(),
-                        "progress_hooks": [self.progress_hook_v],
+                        "progress_hooks": [lambda d: self.progress_hook_v(d, queue, download_progress)],
                         'noprogress': True
                     }
                     print("test3")
                     with ydl.YoutubeDL(video_opts) as video_ydl:
                         print("test4")
-                        #video_ydl.download([link])
-                        video_thread = threading.Thread(target=video_ydl.download, args=([link],))              
-                    video_thread.start()
+                        video_ydl.download([link])
+                        #video_thread = threading.Thread(target=video_ydl.download, args=([link]))
+                        #video_thread.start()
 
                     audio_opts = {
                         "format": stream_map.get("Audio"),
                         "outtmpl": audio_temp_path,  # Temporary file for audio
                         "quiet": True,
                         "logger": SilentLogger(),
-                        #"progress_hooks": [lambda d: self.progress_hook_v(d, queue)],
+                        "progress_hooks": [lambda d: self.progress_hook_v(d, queue, download_progress)],
                         'noprogress': True
                     }
                     with ydl.YoutubeDL(audio_opts) as audio_ydl:
                         print("test5")
                         audio_ydl.download([link])
+                        #audio_thread = threading.Thread(target=audio_ydl.download, args=([link]))
+                        #audio_thread.start()
                     
                     print("test6")
-                    video_thread.join()
                     
                     # Merge video and audio
                     print("temp location", audio_temp_path, video_temp_path)
                     #self.merge_audio_video(audio_temp_path, video_temp_path)
         except Exception as e:
-            # Display the error message in the GUI, displays "Download cancelled." if the download was cancelled
-            # Remove the part file when the audio download is cancelled
-            #if os.path.exists(f"{self.output}.mp3.part"):
-                #os.remove(f"{self.output}.mp3.part")
-            print(e, "ALO")
-            ##return e
+            print(e)
     
     def merge_audio_video(self, audio_path, video_path):
         command = [
@@ -286,7 +255,7 @@ class Gui:
         self.root.geometry(f"{GUI_WIDTH}x{GUI_HEIGHT}+{POS_LEFT}+{POS_TOP}")
         self.root.resizable(False, False)
         
-        self.executor = concurrent.futures.ProcessPoolExecutor(max_workers=1)
+        self.executor = concurrent.futures.ProcessPoolExecutor(max_workers=3)
         
         self.info_label = tk.CTkLabel(master=root, text="YouTube link of the video you want to download:")
         self.user_input = tk.CTkEntry(master=root, placeholder_text="Insert link here", width=300)
@@ -330,25 +299,17 @@ class Gui:
         self.root.after(500, lambda: check_future(dots))
     
     def download_window(self, resolutions, stream_map, output_path):
-        print(resolutions, stream_map, output_path)
         if resolutions is None:
             self.status_label.configure(text="Invalid URL, please try again.")
             self.download_button.configure(state="normal")
             return
         download_toplevel = tk.CTkToplevel()
         download_toplevel.title("Download")
-        self.test_queue = Queue()
+        manager = Manager()
+        test_queue = manager.Queue()
         
         # If the user closes the download window rather than selecting a resolution, re-enable the download button
         download_toplevel.protocol("WM_DELETE_WINDOW", self.download_button.configure(state="normal"))
-        
-        """
-        def update(stream):
-            if stream == "Audio":
-                self.root.after(500, self.update_progress_a)
-            else:
-                self.root.after(500, self.update_progress_v)
-        """
         
         for i, stream in enumerate(resolutions):
             resolution_label = tk.CTkLabel(master=download_toplevel, text=resolutions[i])
@@ -357,9 +318,8 @@ class Gui:
             button = tk.CTkButton(master=download_toplevel, text="Download", command=lambda element=stream: (download_toplevel.protocol("WM_DELETE_WINDOW", self.download_button.configure(state="disabled")),
                                                                                                              download_toplevel.destroy(),
                                                                                                              self.status_label.configure(text="Starting download..."),
-                                                                                                             #self.download.download_video(stream_map, element, self.link, self.test_queue)
-                                                                                                             self.executor.submit(self.download.download_video, stream_map, element, self.link, output_path),
-                                                                                                             #update(element)
+                                                                                                             create_future(element),
+                                                                                                             #self.executor.submit(self.download.download_video, stream_map, element, self.link, output_path)
                                                                                                              )
                                   )
             button.grid(row=i, column=1, padx=5, pady=20)
@@ -372,47 +332,28 @@ class Gui:
         download_toplevel.geometry(f"{toplevel_width}x{toplevel_height}+{left}+{top}")
         download_toplevel.resizable(False, False)
         download_toplevel.grab_set()
-    
-    def update_progress_v(self):
-        #if self.download_button.cget("text") != "Cancel download":
-        #    self.download_button.configure(text="Cancel download", state="normal", command=self.download.cancel_download)
         
-        while not self.test_queue.empty():
-            progress = self.test_queue.get()
-            print(progress)
-            self.progress_bar.set(progress / 100)
-            self.status_label.configure(text=f"Downloading... {progress:.2f}%")
+        def create_future(stream):
+            future = self.executor.submit(self.download.download_video, stream_map, stream, self.link, output_path, test_queue)
+            self.root.after(100, self.update_progress(future, test_queue))
         
-        progress = self.test_queue.get()
-        print(progress)
-        if progress < 100:
-            self.root.after(500, self.update_progress_v)
+    def update_progress(self, future, queue):
+        if future.done():
+            try:
+                print("Final queue content:", queue)
+                self.status_label.configure(text="Download complete!")
+            except Exception as e:
+                self.status_label.configure(text=e)
+                self.download_button.configure(state="normal")
         else:
             try:
-                self.status_label.configure(text="Download Complete!")
+                while not queue.empty():
+                    progress = queue.get_nowait()
+                    self.progress_bar.set(progress)
+                    self.status_label.configure(text=f"{progress*100:.2f}%")
             except Exception as e:
-                self.status_label.configure(text=f"Error: {e}")
-        
-        #self.progress_bar.set(progress)
-        #if progress < DOWNLOAD_WEIGHT:
-            #self.status_label.configure(text=f"Downloading audio and video...    {progress*100:.2f}%")
-        #elif progress == DOWNLOAD_WEIGHT:
-            #self.status_label.configure(text=f"Seperate downloads complete, waiting to merge...     {DOWNLOAD_WEIGHT*100:.2f}%")
-        #else:
-            #self.status_label.configure(text=f"Merging audio and video...    {progress*100:.2f}%")
-        self.root.update()
-    
-    def update_progress_a(self, progress):
-        if self.download_button.cget("text") != "Cancel download":
-            self.download_button.configure(text="Cancel download", state="normal", command=self.download.cancel_download)
-        self.progress_bar.set(progress)
-        self.status_label.configure(text=f"Downloading the audio...    {progress*100:.2f}%")
-        self.root.update()
-    
-    def download_complete(self):
-        self.progress_bar.set(1.0)
-        self.download_button.configure(text="Download", state="normal", command=self.start_extract)
-        self.status_label.configure(text="Download complete!")
+                print("Queue error:", e)
+            self.root.after(100, lambda: self.update_progress(future, queue))
         
 
 if __name__ == "__main__":
