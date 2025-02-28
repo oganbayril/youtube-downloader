@@ -87,87 +87,77 @@ class Download:
         except Exception as e:
             return e
     
-    def progress_hook_v(self, d, queue, download_progress):
-        #print("HAHEWQHYEB")
+    def progress_hook(self, d, queue, download_progress):
         if d["status"] == "downloading":
             raw_progress = d["_percent_str"]
             progress_clean = re.sub(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])', '', raw_progress) # Get rid of ANSI escape sequences (color codes)
             try:
                 progress = float(progress_clean.strip().replace('%', ''))
-                if "temp_video" in d["filename"]:
-                    download_progress["video"] = progress
-                elif "temp_audio" in d["filename"]:
-                    download_progress["audio"] = progress
-                
-                total_progress = (
-                    DOWNLOAD_WEIGHT * ((download_progress["video"] + download_progress["audio"]) / 2)
-                )
-                
-                #print(total_progress)
-                queue.put(total_progress / 100)
-
+                # Seperate video and audio progress if the stream is a video stream
+                if "video" in download_progress:
+                    if "temp_video" in d["filename"]:
+                        download_progress["video"] = progress
+                    elif "temp_audio" in d["filename"]:
+                        download_progress["audio"] = progress
+                    
+                    total_progress = (
+                        DOWNLOAD_WEIGHT * ((download_progress["video"] + download_progress["audio"]) / 2)
+                    )
+                    queue.put(total_progress / 100)
+                # If the stream is an audio stream, just put the progress in the queue
+                else:
+                    queue.put(progress / 100)
+                    
             except ValueError:
                 return
 
     def download_video(self, stream_map, stream, link, output_path, queue):
-        download_progress = {"video": 0, "audio": 0}
         try:
             # Download only audio if the stream is an audio stream
             if stream == "Audio":
-                print("test")
+                download_progress = {"audio": 0}
                 audio_opts = {
                     "format": stream_map.get("Audio"),
                     "outtmpl": f"{output_path}.mp3",  # Save as mp3
                     "quiet": True,
                     "logger": SilentLogger(),
-                    "progress_hooks": [lambda d: self.progress_hook_a_stream],
+                    "progress_hooks": [lambda d: self.progress_hook(d, queue, download_progress)],
                     'noprogress': True
                 }
                 with ydl.YoutubeDL(audio_opts) as audio_ydl:
                     audio_ydl.download([link])
-                
-                #root.download_complete()
             
             # Download video and audio streams separately if the stream is a video stream
             else:
-                print("test")
+                download_progress = {"video": 0, "audio": 0}
                 with tempfile.TemporaryDirectory() as temp_dir:
                     # Temporary video and audio file paths
                     video_temp_path = os.path.join(temp_dir, "temp_video.mp4")
                     audio_temp_path = os.path.join(temp_dir, "temp_audio.m4a")
-                    print("test2")
-                    print(stream_map)
-                    # Download video and audio streams simultaneously
-                    video_opts = {
-                        "format": stream_map[stream],
-                        "outtmpl": video_temp_path,  # Temporary file for video
-                        "quiet": True,
-                        "logger": SilentLogger(),
-                        "progress_hooks": [lambda d: self.progress_hook_v(d, queue, download_progress)],
-                        'noprogress': True
-                    }
-                    print("test3")
-                    with ydl.YoutubeDL(video_opts) as video_ydl:
-                        print("test4")
-                        video_ydl.download([link])
-                        #video_thread = threading.Thread(target=video_ydl.download, args=([link]))
-                        #video_thread.start()
 
+                    # Download video and audio streams simultaneously
                     audio_opts = {
                         "format": stream_map.get("Audio"),
                         "outtmpl": audio_temp_path,  # Temporary file for audio
                         "quiet": True,
                         "logger": SilentLogger(),
-                        "progress_hooks": [lambda d: self.progress_hook_v(d, queue, download_progress)],
+                        "progress_hooks": [lambda d: self.progress_hook(d, queue, download_progress)],
                         'noprogress': True
                     }
                     with ydl.YoutubeDL(audio_opts) as audio_ydl:
-                        print("test5")
-                        audio_ydl.download([link])
-                        #audio_thread = threading.Thread(target=audio_ydl.download, args=([link]))
-                        #audio_thread.start()
+                        audio_thread = threading.Thread(target=audio_ydl.download, args=([link]))
+                        audio_thread.start()
                     
-                    print("test6")
+                    video_opts = {
+                        "format": stream_map[stream],
+                        "outtmpl": video_temp_path,  # Temporary file for video
+                        "quiet": True,
+                        "logger": SilentLogger(),
+                        "progress_hooks": [lambda d: self.progress_hook(d, queue, download_progress)],
+                        'noprogress': True
+                    }
+                    with ydl.YoutubeDL(video_opts) as video_ydl:
+                        video_ydl.download([link])
                     
                     # Merge video and audio
                     print("temp location", audio_temp_path, video_temp_path)
@@ -199,6 +189,7 @@ class Download:
         
         duration = None
         for line in process.stderr:
+            """
             if self.download_cancel_event.is_set():
                 process.terminate()  # Kill the ffmpeg process
                 process.wait() # Wait for the process to terminate
@@ -207,6 +198,7 @@ class Download:
                 if os.path.exists(f"{self.output}.mp4"):
                     os.remove(f"{self.output}.mp4")
                 return "Download cancelled." # Exit the function early
+            """
 
             if "Duration:" in line and duration is None:
                 # Extract duration from FFmpeg output
@@ -335,9 +327,9 @@ class Gui:
         
         def create_future(stream):
             future = self.executor.submit(self.download.download_video, stream_map, stream, self.link, output_path, test_queue)
-            self.root.after(100, self.update_progress(future, test_queue))
+            self.root.after(100, self.update_progress(future, test_queue, stream))
         
-    def update_progress(self, future, queue):
+    def update_progress(self, future, queue, stream):
         if future.done():
             try:
                 print("Final queue content:", queue)
@@ -349,11 +341,12 @@ class Gui:
             try:
                 while not queue.empty():
                     progress = queue.get_nowait()
+                    
                     self.progress_bar.set(progress)
                     self.status_label.configure(text=f"{progress*100:.2f}%")
             except Exception as e:
                 print("Queue error:", e)
-            self.root.after(100, lambda: self.update_progress(future, queue))
+            self.root.after(100, lambda: self.update_progress(future, queue, stream))
         
 
 if __name__ == "__main__":
