@@ -102,6 +102,7 @@ class Download:
                     
                     total_progress = (
                         DOWNLOAD_WEIGHT * ((download_progress["video"] + download_progress["audio"]) / 2)
+                        + MERGE_WEIGHT * download_progress["merge"]
                     )
                     queue.put(total_progress / 100)
                 # If the stream is an audio stream, just put the progress in the queue
@@ -111,14 +112,14 @@ class Download:
             except ValueError:
                 return
 
-    def download_video(self, stream_map, stream, link, output_path, queue):
+    def download_video(self, stream_map, stream, link, output, queue):
         try:
             # Download only audio if the stream is an audio stream
             if stream == "Audio":
                 download_progress = {"audio": 0}
                 audio_opts = {
                     "format": stream_map.get("Audio"),
-                    "outtmpl": f"{output_path}.mp3",  # Save as mp3
+                    "outtmpl": f"{output}.mp3",  # Save as mp3
                     "quiet": True,
                     "logger": SilentLogger(),
                     "progress_hooks": [lambda d: self.progress_hook(d, queue, download_progress)],
@@ -129,7 +130,7 @@ class Download:
             
             # Download video and audio streams separately if the stream is a video stream
             else:
-                download_progress = {"video": 0, "audio": 0}
+                download_progress = {"video": 0, "audio": 0, "merge": 0}
                 with tempfile.TemporaryDirectory() as temp_dir:
                     # Temporary video and audio file paths
                     video_temp_path = os.path.join(temp_dir, "temp_video.mp4")
@@ -161,11 +162,11 @@ class Download:
                     
                     # Merge video and audio
                     print("temp location", audio_temp_path, video_temp_path)
-                    #self.merge_audio_video(audio_temp_path, video_temp_path)
+                    self.merge_audio_video(audio_temp_path, video_temp_path, output, download_progress , queue)
         except Exception as e:
             print(e)
     
-    def merge_audio_video(self, audio_path, video_path):
+    def merge_audio_video(self, audio_path, video_path, output, download_progress , queue):
         command = [
             "ffmpeg",
             "-i", video_path,
@@ -176,7 +177,7 @@ class Download:
             "-c:a", "aac",
             "-b:a", "192k",
             "-movflags", "+faststart",
-            f"{self.output}.mp4",
+            f"{output}.mp4",
             "-y",
         ]
 
@@ -215,22 +216,15 @@ class Download:
                     elapsed_time = hours * 3600 + minutes * 60 + seconds
 
                     # Calculate merging progress
-                    self.download_progress["merge"] = (elapsed_time / duration) * 100
+                    download_progress["merge"] = (elapsed_time / duration) * 100
                     total_progress = (
-                        DOWNLOAD_WEIGHT * ((self.download_progress["video"] + self.download_progress["audio"]) / 2)
-                        + MERGE_WEIGHT * self.download_progress["merge"]
+                        DOWNLOAD_WEIGHT * ((download_progress["video"] + download_progress["audio"]) / 2)
+                        + MERGE_WEIGHT * download_progress["merge"]
                     )
-                    root.update_progress_v(total_progress / 100)
-                    #self.gui.update_progress_v(total_progress / 100)
+                    queue.put(total_progress / 100)
 
         process.wait()
-        root.download_complete()
     
-    def cancel_download(self):
-        self.is_downloading = False
-        root.status_label.configure(text="Cancelling download...")
-        self.gui.download_button.configure(state="disabled")
-
 
 class Gui:
     def __init__(self, root):
@@ -332,8 +326,9 @@ class Gui:
     def update_progress(self, future, queue, stream):
         if future.done():
             try:
-                print("Final queue content:", queue)
                 self.status_label.configure(text="Download complete!")
+                self.download_button.configure(state="normal")
+                self.progress_bar.set(1)
             except Exception as e:
                 self.status_label.configure(text=e)
                 self.download_button.configure(state="normal")
@@ -341,9 +336,16 @@ class Gui:
             try:
                 while not queue.empty():
                     progress = queue.get_nowait()
-                    
+                    if stream == "Audio":
+                        self.status_label.configure(text=f"Downloading audio...    {progress*100:.2f}%")
+                    else:
+                        if progress < DOWNLOAD_WEIGHT:
+                            self.status_label.configure(text=f"Downloading audio and video streams seperately...    {progress*100:.2f}%")
+                        elif progress == DOWNLOAD_WEIGHT:
+                            self.status_label.configure(text=f"Seperate streams downloaded, waiting to merge...    {progress*100:.2f}%")
+                        else:
+                            self.status_label.configure(text=f"Merging streams...    {progress*100:.2f}%")
                     self.progress_bar.set(progress)
-                    self.status_label.configure(text=f"{progress*100:.2f}%")
             except Exception as e:
                 print("Queue error:", e)
             self.root.after(100, lambda: self.update_progress(future, queue, stream))
