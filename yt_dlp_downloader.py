@@ -3,13 +3,10 @@ import yt_dlp as ydl
 import os
 import tempfile
 from multiprocessing import Manager
-import threading
 import re
 import subprocess
 from CTkMessagebox import CTkMessagebox as messagebox
 import concurrent.futures
-
-#  EWHQEINQBEJIWQE
 
 # Set the path to whatever you want, the default is the Downloads folder
 download_path = os.path.join(os.path.expanduser("~"), "Downloads")
@@ -24,7 +21,6 @@ MERGE_WEIGHT = 0.7
 # Standard resolutions for the video streams (can be customized)
 standard_resolutions = [144, 240, 360, 480, 720, 1080, 1440, 2160, 4320]
 
-# Create the download path if it doesn't exist
 if os.path.exists(download_path):
     pass
 else:  
@@ -43,8 +39,12 @@ class SilentLogger:
 
     def error(self, msg):
         pass
+
+# Custom exception for when the download is cancelled
+class DownloadCancelled(Exception):
+    pass
     
-class Download:
+class Downloader:
     def extract_data(self, url):
         ydl_opts = {"quiet": True,
                     "logger": SilentLogger()}
@@ -53,6 +53,19 @@ class Download:
                 video_info = dl.extract_info(url, download=False)
                 video_title = video_info["title"]  # Extract video title
                 formats = video_info.get("formats", [])
+                
+                duration = video_info.get("duration") # Get duration of video in seconds
+                print(duration)
+                
+                """
+                if 'is_live' in video_info and video_info['is_live']:
+                    print("LIVE STREAM")
+                else:
+                    if 'duration' in video_info and video_info['duration'] > 0:
+                        print("HAS DURATION")
+                    else:
+                        print("????")
+                """
                 
                 title = "".join(c if c.isalnum() or c in " _-()" else "_" for c in video_title)
                 output = f"{download_path}/{title}"
@@ -83,15 +96,18 @@ class Download:
                 resolutions.append("Audio")
                 stream_map["Audio"] = best_audio_stream["format_id"]
                 
-                return resolutions, stream_map, output
+                return resolutions, stream_map, output, duration
         except Exception as e:
             return e
     
-    def progress_hook(self, d, queue, download_progress):
+    def progress_hook(self, d, queue, download_progress, cancel_event):
+        if cancel_event.is_set():
+            raise DownloadCancelled("Download cancelled by user.")
+        
         if d["status"] == "downloading":
-            raw_progress = d["_percent_str"]
-            progress_clean = re.sub(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])', '', raw_progress) # Get rid of ANSI escape sequences (color codes)
             try:
+                raw_progress = d["_percent_str"]
+                progress_clean = re.sub(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])', '', raw_progress) # Get rid of ANSI escape sequences (color codes)
                 progress = float(progress_clean.strip().replace('%', ''))
                 # Seperate video and audio progress if the stream is a video stream
                 if "video" in download_progress:
@@ -107,12 +123,11 @@ class Download:
                     queue.put(total_progress / 100)
                 # If the stream is an audio stream, just put the progress in the queue
                 else:
-                    queue.put(progress / 100)
-                    
-            except ValueError:
-                return
+                    queue.put(progress / 100)    
+            except Exception as e:
+                queue.put(e)
 
-    def download_video(self, stream_map, stream, link, output, queue):
+    def download_video(self, stream_map, stream, link, output, queue, cancel_event, duration):
         try:
             # Download only audio if the stream is an audio stream
             if stream == "Audio":
@@ -122,11 +137,12 @@ class Download:
                     "outtmpl": f"{output}.mp3",  # Save as mp3
                     "quiet": True,
                     "logger": SilentLogger(),
-                    "progress_hooks": [lambda d: self.progress_hook(d, queue, download_progress)],
+                    "progress_hooks": [lambda d: self.progress_hook(d, queue, download_progress, cancel_event)],
                     'noprogress': True
                 }
                 with ydl.YoutubeDL(audio_opts) as audio_ydl:
                     audio_ydl.download([link])
+                return "Download completed."
             
             # Download video and audio streams separately if the stream is a video stream
             else:
@@ -142,43 +158,46 @@ class Download:
                         "outtmpl": audio_temp_path,  # Temporary file for audio
                         "quiet": True,
                         "logger": SilentLogger(),
-                        "progress_hooks": [lambda d: self.progress_hook(d, queue, download_progress)],
-                        'noprogress': True
+                        "progress_hooks": [lambda d: self.progress_hook(d, queue, download_progress, cancel_event)],
+                        "noprogress": True
                     }
-                    with ydl.YoutubeDL(audio_opts) as audio_ydl:
-                        audio_thread = threading.Thread(target=audio_ydl.download, args=([link]))
-                        audio_thread.start()
                     
                     video_opts = {
                         "format": stream_map[stream],
                         "outtmpl": video_temp_path,  # Temporary file for video
                         "quiet": True,
                         "logger": SilentLogger(),
-                        "progress_hooks": [lambda d: self.progress_hook(d, queue, download_progress)],
-                        'noprogress': True
+                        "progress_hooks": [lambda d: self.progress_hook(d, queue, download_progress, cancel_event)],
+                        "noprogress": True
                     }
-                    with ydl.YoutubeDL(video_opts) as video_ydl:
-                        video_ydl.download([link])
+                    
+                    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+                        video_future = executor.submit(ydl.YoutubeDL(video_opts).download, [link])
+                        audio_future = executor.submit(ydl.YoutubeDL(audio_opts).download, [link])
+                        concurrent.futures.wait([video_future, audio_future])
                     
                     # Merge video and audio
                     print("temp location", audio_temp_path, video_temp_path)
-                    self.merge_audio_video(audio_temp_path, video_temp_path, output, download_progress , queue)
+                    
+                    self.merge_audio_video(audio_temp_path, video_temp_path, output, download_progress, queue, cancel_event, duration)
+                    return "Download completed."
         except Exception as e:
-            print(e)
+            return e
     
-    def merge_audio_video(self, audio_path, video_path, output, download_progress , queue):
+    def merge_audio_video(self, audio_path, video_path, output, download_progress , queue, cancel_event, duration):
         command = [
             "ffmpeg",
             "-i", video_path,
             "-i", audio_path,
+            "-t", str(duration),
             "-c:v", "libx264",
             "-preset", "fast",
             "-crf", "23",
             "-c:a", "aac",
             "-b:a", "192k",
             "-movflags", "+faststart",
-            f"{output}.mp4",
             "-y",
+            f"{output}.mp4",
         ]
 
         process = subprocess.Popen(
@@ -186,28 +205,19 @@ class Download:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             universal_newlines=True,
+            encoding="utf-8",      # Specify an encoding
+            errors="replace"       # Replace any problematic characters
         )
+
         
-        duration = None
         for line in process.stderr:
-            """
-            if self.download_cancel_event.is_set():
+            if cancel_event.is_set():
                 process.terminate()  # Kill the ffmpeg process
                 process.wait() # Wait for the process to terminate
-                #self.gui.download_button.configure(text="Download", state="normal", command=self.gui.start_extract)
-                #self.gui.status_label.configure(text="Download cancelled.")
-                if os.path.exists(f"{self.output}.mp4"):
-                    os.remove(f"{self.output}.mp4")
-                return "Download cancelled." # Exit the function early
-            """
-
-            if "Duration:" in line and duration is None:
-                # Extract duration from FFmpeg output
-                match = re.search(r"Duration: (\d+):(\d+):(\d+\.\d+)", line)
-                if match:
-                    hours, minutes, seconds = map(float, match.groups())
-                    duration = hours * 3600 + minutes * 60 + seconds
-
+                if os.path.exists(f"{output}.mp4"):
+                    os.remove(f"{output}.mp4")
+                raise DownloadCancelled("Download cancelled by user.")
+            
             if "time=" in line and duration:
                 # Extract elapsed time
                 match = re.search(r"time=(\d+):(\d+):(\d+\.\d+)", line)
@@ -222,10 +232,11 @@ class Download:
                         + MERGE_WEIGHT * download_progress["merge"]
                     )
                     queue.put(total_progress / 100)
-
         process.wait()
-    
-
+        
+        
+        
+        
 class Gui:
     def __init__(self, root):
         self.root = root
@@ -241,7 +252,7 @@ class Gui:
         self.root.geometry(f"{GUI_WIDTH}x{GUI_HEIGHT}+{POS_LEFT}+{POS_TOP}")
         self.root.resizable(False, False)
         
-        self.executor = concurrent.futures.ProcessPoolExecutor(max_workers=3)
+        self.executor = concurrent.futures.ProcessPoolExecutor(max_workers=1)
         
         self.info_label = tk.CTkLabel(master=root, text="YouTube link of the video you want to download:")
         self.user_input = tk.CTkEntry(master=root, placeholder_text="Insert link here", width=300)
@@ -263,9 +274,9 @@ class Gui:
             return
         self.progress_bar.set(0)
         self.download_button.configure(state="disabled")
-        self.download = Download()
+        self.downloader = Downloader()
         self.link = self.user_input.get()
-        future = self.executor.submit(self.download.extract_data, self.link)
+        future = self.executor.submit(self.downloader.extract_data, self.link)
         
         dots = 0
         def check_future(dots):
@@ -273,9 +284,9 @@ class Gui:
             self.status_label.configure(text=f"Extracting data{"." * dots}")
             if future.done():
                 try:
-                    resolutions, stream_map, output_path = future.result()
+                    resolutions, stream_map, output_path, duration = future.result()
                     self.status_label.configure(text="")
-                    self.download_window(resolutions, stream_map, output_path)
+                    self.download_window(resolutions, stream_map, output_path, duration)
                 except Exception as e:
                     self.status_label.configure(text=e)
                     self.download_button.configure(state="normal")
@@ -284,7 +295,7 @@ class Gui:
         
         self.root.after(500, lambda: check_future(dots))
     
-    def download_window(self, resolutions, stream_map, output_path):
+    def download_window(self, resolutions, stream_map, output_path, duration):
         if resolutions is None:
             self.status_label.configure(text="Invalid URL, please try again.")
             self.download_button.configure(state="normal")
@@ -292,7 +303,16 @@ class Gui:
         download_toplevel = tk.CTkToplevel()
         download_toplevel.title("Download")
         manager = Manager()
-        test_queue = manager.Queue()
+        progress_queue = manager.Queue()
+        cancel_event = manager.Event()
+        
+        # Calculate the left and top positions so that our download window is centered
+        toplevel_width, toplevel_height = 200, 700
+        left = int(self.screen_width / 2 - toplevel_width / 2)
+        top = int(self.screen_height / 2 - toplevel_height / 2)
+        download_toplevel.geometry(f"{toplevel_width}x{toplevel_height}+{left}+{top}")
+        download_toplevel.resizable(False, False)
+        download_toplevel.grab_set()
         
         # If the user closes the download window rather than selecting a resolution, re-enable the download button
         download_toplevel.protocol("WM_DELETE_WINDOW", self.download_button.configure(state="normal"))
@@ -301,36 +321,44 @@ class Gui:
             resolution_label = tk.CTkLabel(master=download_toplevel, text=resolutions[i])
             resolution_label.grid(row=i, column=0, padx=5, pady=20)
 
-            button = tk.CTkButton(master=download_toplevel, text="Download", command=lambda element=stream: (download_toplevel.protocol("WM_DELETE_WINDOW", self.download_button.configure(state="disabled")),
+            button = tk.CTkButton(master=download_toplevel, text="Download", command=lambda element=stream: (
                                                                                                              download_toplevel.destroy(),
                                                                                                              self.status_label.configure(text="Starting download..."),
                                                                                                              create_future(element),
-                                                                                                             #self.executor.submit(self.download.download_video, stream_map, element, self.link, output_path)
+                                                                                                             self.download_button.configure(text="Cancel download", command=lambda: self.cancel_download(cancel_event))
                                                                                                              )
                                   )
             button.grid(row=i, column=1, padx=5, pady=20)
         
-        toplevel_width, toplevel_height = 200, 700
-
-        left = int(self.screen_width / 2 - toplevel_width / 2)
-        top = int(self.screen_height / 2 - toplevel_height / 2)
-
-        download_toplevel.geometry(f"{toplevel_width}x{toplevel_height}+{left}+{top}")
-        download_toplevel.resizable(False, False)
-        download_toplevel.grab_set()
-        
         def create_future(stream):
-            future = self.executor.submit(self.download.download_video, stream_map, stream, self.link, output_path, test_queue)
-            self.root.after(100, self.update_progress(future, test_queue, stream))
+            future = self.executor.submit(self.downloader.download_video, stream_map, stream, self.link, output_path, progress_queue, cancel_event, duration)
+            self.root.after(100, self.update_progress(future, progress_queue, stream, output_path))
+    
+    def cancel_download(self, cancel_event):
+        cancel_event.set()
+        self.status_label.configure(text="Cancelling download...")
         
-    def update_progress(self, future, queue, stream):
+    def update_progress(self, future, queue, stream, output_path):
         if future.done():
             try:
-                self.status_label.configure(text="Download complete!")
-                self.download_button.configure(state="normal")
-                self.progress_bar.set(1)
+                result = future.result()
+                print("RESULT", result)
+                print(type(result))
+                if type(result) is DownloadCancelled:
+                    self.status_label.configure(text="Download cancelled by user.")
+                    if os.path.exists(f"{output_path}.mp3.part"):
+                        os.remove(f"{output_path}.mp3.part")
+                #elif type(result) is PermissionError:
+                    #self.status_label.configure(text="Might be downloading a live stream")
+                elif result == "Download completed.":
+                    self.status_label.configure(text="Download completed.")
+                    self.progress_bar.set(1)
+                else:
+                    self.status_label.configure(text=f"Error: {result}")
+                self.download_button.configure(text="Download", state="normal", command=self.start_extract)
+                
             except Exception as e:
-                self.status_label.configure(text=e)
+                self.status_label.configure(text=f"Error: {e}")
                 self.download_button.configure(state="normal")
         else:
             try:
@@ -348,7 +376,7 @@ class Gui:
                     self.progress_bar.set(progress)
             except Exception as e:
                 print("Queue error:", e)
-            self.root.after(100, lambda: self.update_progress(future, queue, stream))
+            self.root.after(100, lambda: self.update_progress(future, queue, stream, output_path))
         
 
 if __name__ == "__main__":
