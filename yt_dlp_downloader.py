@@ -45,9 +45,14 @@ class DownloadCancelled(Exception):
     pass
     
 class Downloader:
-    def extract_data(self, url):
+    def extraction_progress_hook(self, d, cancel_event):
+        if cancel_event.is_set():
+            raise DownloadCancelled("Download cancelled by user.")
+    
+    def extract_data(self, url, cancel_event):
         ydl_opts = {"quiet": True,
-                    "logger": SilentLogger()}
+                    "logger": SilentLogger(),
+                    "progress_hooks": [lambda d: self.extraction_progress_hook(d, cancel_event)],}
         try:
             with ydl.YoutubeDL(ydl_opts) as dl:
                 video_info = dl.extract_info(url, download=False)
@@ -239,8 +244,17 @@ class Downloader:
         
 class Gui:
     def __init__(self, root):
+        self.executor = concurrent.futures.ProcessPoolExecutor(max_workers=1)
+        self.is_extracting = False
+        self.is_downloading = False
+        self.close_window = False
+        self.manager = Manager()
+        self.progress_queue = self.manager.Queue()
+        self.cancel_event = self.manager.Event()
+        
         self.root = root
         self.root.title("Youtube downloader")
+        root.protocol("WM_DELETE_WINDOW", self.close_gui)
         
         # Get the screen width and height
         self.screen_width, self.screen_height = root.winfo_screenwidth(), root.winfo_screenheight()
@@ -251,8 +265,6 @@ class Gui:
         
         self.root.geometry(f"{GUI_WIDTH}x{GUI_HEIGHT}+{POS_LEFT}+{POS_TOP}")
         self.root.resizable(False, False)
-        
-        self.executor = concurrent.futures.ProcessPoolExecutor(max_workers=1)
         
         self.info_label = tk.CTkLabel(master=root, text="YouTube link of the video you want to download:")
         self.user_input = tk.CTkEntry(master=root, placeholder_text="Insert link here", width=300)
@@ -276,7 +288,8 @@ class Gui:
         self.download_button.configure(state="disabled")
         self.downloader = Downloader()
         self.link = self.user_input.get()
-        future = self.executor.submit(self.downloader.extract_data, self.link)
+        future = self.executor.submit(self.downloader.extract_data, self.link, self.cancel_event)
+        self.is_extracting = True
         
         dots = 0
         def check_future(dots):
@@ -286,6 +299,10 @@ class Gui:
                 try:
                     resolutions, stream_map, output_path, duration = future.result()
                     self.status_label.configure(text="")
+                    self.is_extracting = False
+                    #if self.close_window:
+                        #print("THISSSSSSSSS")
+                        #self.response = "No"
                     self.download_window(resolutions, stream_map, output_path, duration)
                 except Exception as e:
                     self.status_label.configure(text=e)
@@ -302,9 +319,6 @@ class Gui:
             return
         download_toplevel = tk.CTkToplevel()
         download_toplevel.title("Download")
-        manager = Manager()
-        progress_queue = manager.Queue()
-        cancel_event = manager.Event()
         
         # Calculate the left and top positions so that our download window is centered
         toplevel_width, toplevel_height = 200, 700
@@ -325,14 +339,15 @@ class Gui:
                                                                                                              download_toplevel.destroy(),
                                                                                                              self.status_label.configure(text="Starting download..."),
                                                                                                              create_future(element),
-                                                                                                             self.download_button.configure(text="Cancel download", command=lambda: self.cancel_download(cancel_event))
+                                                                                                             self.download_button.configure(text="Cancel download", command=lambda: self.cancel_download(self.cancel_event))
                                                                                                              )
                                   )
             button.grid(row=i, column=1, padx=5, pady=20)
         
         def create_future(stream):
-            future = self.executor.submit(self.downloader.download_video, stream_map, stream, self.link, output_path, progress_queue, cancel_event, duration)
-            self.root.after(100, self.update_progress(future, progress_queue, stream, output_path))
+            self.is_downloading = True
+            future = self.executor.submit(self.downloader.download_video, stream_map, stream, self.link, output_path, self.progress_queue, self.cancel_event, duration)
+            self.root.after(100, self.update_progress(future, self.progress_queue, stream, output_path))
     
     def cancel_download(self, cancel_event):
         cancel_event.set()
@@ -341,6 +356,7 @@ class Gui:
     def update_progress(self, future, queue, stream, output_path):
         if future.done():
             try:
+                self.is_downloading = False
                 result = future.result()
                 print("RESULT", result)
                 print(type(result))
@@ -348,8 +364,6 @@ class Gui:
                     self.status_label.configure(text="Download cancelled by user.")
                     if os.path.exists(f"{output_path}.mp3.part"):
                         os.remove(f"{output_path}.mp3.part")
-                #elif type(result) is PermissionError:
-                    #self.status_label.configure(text="Might be downloading a live stream")
                 elif result == "Download completed.":
                     self.status_label.configure(text="Download completed.")
                     self.progress_bar.set(1)
@@ -377,7 +391,31 @@ class Gui:
             except Exception as e:
                 print("Queue error:", e)
             self.root.after(100, lambda: self.update_progress(future, queue, stream, output_path))
+    
+    def close_gui(self):
+        self.close_window = True
+        status = {
+            "extraction": self.is_extracting,
+            "download": self.is_downloading
+        }
+
+        event_status = [key for key, value in status.items() if value]
         
+        if event_status:
+            message = messagebox(title="Are you sure?",
+                    message=f"Do you want to stop the {event_status[0]} and close the application?",
+                    icon="question",
+                    option_1="No",
+                    option_2="Yes")
+            response = message.get()
+            if response == "Yes":
+                self.cancel_download(self.cancel_event)
+                self.root.destroy()
+            else:
+                pass
+        else:
+            self.root.destroy()
+            
 
 if __name__ == "__main__":
     root = tk.CTk()
