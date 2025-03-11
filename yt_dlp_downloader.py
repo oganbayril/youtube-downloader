@@ -56,28 +56,19 @@ class Downloader:
         try:
             with ydl.YoutubeDL(ydl_opts) as dl:
                 video_info = dl.extract_info(url, download=False)
-                video_title = video_info["title"]  # Extract video title
+                video_title = video_info["title"]
                 formats = video_info.get("formats", [])
-                
-                duration = video_info.get("duration") # Get duration of video in seconds
-                print(duration)
-                
-                """
-                if 'is_live' in video_info and video_info['is_live']:
-                    print("LIVE STREAM")
-                else:
-                    if 'duration' in video_info and video_info['duration'] > 0:
-                        print("HAS DURATION")
-                    else:
-                        print("????")
-                """
-                
+                duration = video_info.get("duration") 
                 title = "".join(c if c.isalnum() or c in " _-()" else "_" for c in video_title)
-                output = f"{download_path}/{title}"
-                
+                output = f"{download_path}/{title}"          
                 best_audio_stream = None
                 stream_map = {}
                 resolutions = []
+                
+                if 'is_live' in video_info and video_info['is_live']: # TODO: ADD LIVESTREAM SUPPORT IN THE FUTURE
+                    return "Live streams are not supported.", None, None, None
+                
+                
                 for stream in formats:
                     if stream.get("vcodec") != "none" and stream.get("acodec") == "none":  # Video-only streams
                         height = stream.get("height")
@@ -153,7 +144,7 @@ class Downloader:
             else:
                 download_progress = {"video": 0, "audio": 0, "merge": 0}
                 with tempfile.TemporaryDirectory() as temp_dir:
-                    # Temporary video and audio file paths
+                    # Temporary video and audio file paths so the download path is clean
                     video_temp_path = os.path.join(temp_dir, "temp_video.mp4")
                     audio_temp_path = os.path.join(temp_dir, "temp_audio.m4a")
 
@@ -164,7 +155,7 @@ class Downloader:
                         "quiet": True,
                         "logger": SilentLogger(),
                         "progress_hooks": [lambda d: self.progress_hook(d, queue, download_progress, cancel_event)],
-                        "noprogress": True
+                        "noprogress": True,
                     }
                     
                     video_opts = {
@@ -173,7 +164,7 @@ class Downloader:
                         "quiet": True,
                         "logger": SilentLogger(),
                         "progress_hooks": [lambda d: self.progress_hook(d, queue, download_progress, cancel_event)],
-                        "noprogress": True
+                        "noprogress": True,
                     }
                     
                     with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
@@ -181,9 +172,7 @@ class Downloader:
                         audio_future = executor.submit(ydl.YoutubeDL(audio_opts).download, [link])
                         concurrent.futures.wait([video_future, audio_future])
                     
-                    # Merge video and audio
-                    print("temp location", audio_temp_path, video_temp_path)
-                    
+                    # Merge video and audio streams       
                     self.merge_audio_video(audio_temp_path, video_temp_path, output, download_progress, queue, cancel_event, duration)
                     return "Download completed."
         except Exception as e:
@@ -210,15 +199,14 @@ class Downloader:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             universal_newlines=True,
-            encoding="utf-8",      # Specify an encoding
+            encoding="utf-8",      # Specify an encoding, utf-8 seems good enough
             errors="replace"       # Replace any problematic characters
         )
 
-        
         for line in process.stderr:
             if cancel_event.is_set():
-                process.terminate()  # Kill the ffmpeg process
-                process.wait() # Wait for the process to terminate
+                process.terminate()
+                process.wait()
                 if os.path.exists(f"{output}.mp4"):
                     os.remove(f"{output}.mp4")
                 raise DownloadCancelled("Download cancelled by user.")
@@ -244,7 +232,7 @@ class Downloader:
         
 class Gui:
     def __init__(self, root):
-        self.executor = concurrent.futures.ProcessPoolExecutor(max_workers=1)
+        self.executor = concurrent.futures.ProcessPoolExecutor(max_workers=2)
         self.is_extracting = False
         self.is_downloading = False
         self.close_window = False
@@ -300,9 +288,10 @@ class Gui:
                     resolutions, stream_map, output_path, duration = future.result()
                     self.status_label.configure(text="")
                     self.is_extracting = False
-                    #if self.close_window:
-                        #print("THISSSSSSSSS")
-                        #self.response = "No"
+                    if self.cancel_event.is_set():
+                        self.cancel_event.clear()
+                    if self.close_window:
+                        self.close_messagebox()
                     self.download_window(resolutions, stream_map, output_path, duration)
                 except Exception as e:
                     self.status_label.configure(text=e)
@@ -315,6 +304,10 @@ class Gui:
     def download_window(self, resolutions, stream_map, output_path, duration):
         if resolutions is None:
             self.status_label.configure(text="Invalid URL, please try again.")
+            self.download_button.configure(state="normal")
+            return
+        if resolutions == "Live streams are not supported.":
+            self.status_label.configure(text="Live streams are not supported.")
             self.download_button.configure(state="normal")
             return
         download_toplevel = tk.CTkToplevel()
@@ -358,9 +351,10 @@ class Gui:
             try:
                 self.is_downloading = False
                 result = future.result()
-                print("RESULT", result)
-                print(type(result))
+                if self.close_window:
+                    self.close_messagebox()
                 if type(result) is DownloadCancelled:
+                    self.cancel_event.clear()
                     self.status_label.configure(text="Download cancelled by user.")
                     if os.path.exists(f"{output_path}.mp3.part"):
                         os.remove(f"{output_path}.mp3.part")
@@ -402,21 +396,29 @@ class Gui:
         event_status = [key for key, value in status.items() if value]
         
         if event_status:
-            message = messagebox(title="Are you sure?",
+            self.message_closed = False
+            self.message = messagebox(title="Are you sure?",
                     message=f"Do you want to stop the {event_status[0]} and close the application?",
                     icon="question",
                     option_1="No",
-                    option_2="Yes")
-            response = message.get()
-            if response == "Yes":
-                self.cancel_download(self.cancel_event)
-                self.root.destroy()
-            else:
-                pass
+                    option_2="Yes",
+                    sound=True,
+                    option_focus=1
+                    )
+            if not self.message_closed:  # Only get response if messagebox is still active
+                self.response = self.message.get()
+                if self.response == "Yes":
+                    self.cancel_download(self.cancel_event)
+                    self.root.destroy()
         else:
             self.root.destroy()
-            
-
+    
+    def close_messagebox(self):
+        if hasattr(self, "message") and self.message:
+            self.message.event_generate("<Escape>")
+            self.message_closed = True  # Set the flag to True to indicate that the messagebox has been closed
+            self.message = None
+    
 if __name__ == "__main__":
     root = tk.CTk()
     gui = Gui(root)
