@@ -45,15 +45,13 @@ class DownloadCancelled(Exception):
     pass
     
 class Downloader:
-    def get_unique_filename(filepath):
-        base, ext = os.path.splitext(filepath)
-        print(base, ext)
+    def get_unique_filename(self, filepath, format):
+        file = f"{filepath}.{format}"
         counter = 1
-        while os.path.exists(filepath):
-            filepath = f"{base} ({counter}){ext}"
+        while os.path.exists(file):
+            file = f"{filepath} ({counter}).{format}"
             counter += 1
-            print(filepath)
-        return filepath
+        return file
     
     def extraction_progress_hook(self, d, cancel_event):
         if cancel_event.is_set():
@@ -147,9 +145,10 @@ class Downloader:
             # Download only audio if the stream is an audio stream
             if stream == "Audio":
                 download_progress = {"audio": 0}
+                output = self.get_unique_filename(output, "mp3")
                 audio_opts = {
                     "format": stream_map.get("Audio"),
-                    "outtmpl": f"{output}.mp3",  # Save as mp3
+                    "outtmpl": output,
                     "quiet": True,
                     "logger": SilentLogger(),
                     "progress_hooks": [lambda d: self.progress_hook(d, queue, download_progress, cancel_event)],
@@ -198,6 +197,7 @@ class Downloader:
             return e
     
     def merge_audio_video(self, audio_path, video_path, output, download_progress , queue, cancel_event, duration):
+        output = self.get_unique_filename(output, "mp4")
         command = [
             "ffmpeg",
             "-i", video_path,
@@ -210,7 +210,7 @@ class Downloader:
             "-b:a", "192k",
             "-movflags", "+faststart",
             "-y",
-            f"{output}.mp4",
+            output,
         ]
 
         process = subprocess.Popen(
@@ -226,8 +226,8 @@ class Downloader:
             if cancel_event.is_set():
                 process.terminate()
                 process.wait()
-                if os.path.exists(f"{output}.mp4"):
-                    os.remove(f"{output}.mp4")
+                if os.path.exists(output):
+                    os.remove(output)
                 raise DownloadCancelled("Download cancelled by user.")
             
             if "time=" in line and duration:
@@ -335,6 +335,7 @@ class Gui:
             return
         download_toplevel = tk.CTkToplevel()
         download_toplevel.title("Download")
+        video_title = os.path.basename(output_path)
         
         # Calculate the left and top positions so that our download window is centered
         toplevel_width, toplevel_height = 200, 700
@@ -353,7 +354,7 @@ class Gui:
 
             button = tk.CTkButton(master=download_toplevel, text="Download", command=lambda element=stream: (
                                                                                                              download_toplevel.destroy(),
-                                                                                                             self.status_label.configure(text="Starting download..."),
+                                                                                                             self.status_label.configure(text=f"Starting to download {video_title}..."), 
                                                                                                              create_future(element),
                                                                                                              self.download_button.configure(text="Cancel download", command=lambda: self.cancel_download(self.cancel_event))
                                                                                                              )
@@ -379,14 +380,17 @@ class Gui:
                 if type(result) is DownloadCancelled:
                     self.cancel_event.clear()
                     self.status_label.configure(text="Download cancelled by user.")
-                    if os.path.exists(f"{output_path}.mp3.part"):
-                        os.remove(f"{output_path}.mp3.part")
+                    output = self.downloader.get_unique_filename(output_path, "mp3")
+                    if os.path.exists(f"{output}.part"): # Delete the .part file if the user cancels the mp3 download
+                        os.remove(f"{output}.part")
                 elif result == "Download completed.":
                     self.status_label.configure(text="Download completed.")
                     self.progress_bar.set(1)
                 else:
                     self.status_label.configure(text=f"Error: {result}")
                 self.download_button.configure(text="Download", state="normal", command=self.start_extract)
+                while not self.progress_queue.empty():
+                    self.progress_queue.get()
                 
             except Exception as e:
                 self.status_label.configure(text=f"Error: {e}")
