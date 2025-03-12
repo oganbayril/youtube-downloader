@@ -45,11 +45,28 @@ class DownloadCancelled(Exception):
     pass
     
 class Downloader:
+    def get_unique_filename(filepath):
+        base, ext = os.path.splitext(filepath)
+        print(base, ext)
+        counter = 1
+        while os.path.exists(filepath):
+            filepath = f"{base} ({counter}){ext}"
+            counter += 1
+            print(filepath)
+        return filepath
+    
     def extraction_progress_hook(self, d, cancel_event):
         if cancel_event.is_set():
             raise DownloadCancelled("Download cancelled by user.")
     
     def extract_data(self, url, cancel_event):
+        possible_errors = {
+            ydl.utils.DownloadError: "Download error, please check the URL or your internet connection.",
+            ydl.utils.ExtractorError: "Extractor error, this might be due to an unsupported site or a problem with the video.",
+            ydl.utils.RegexNotFoundError: "Regex error, the video URL might be incorrect or the site structure has changed.",
+            ydl.utils.GeoRestrictedError: "Geo-restricted video, this video is not available in your region.",
+                           }
+        
         ydl_opts = {"quiet": True,
                     "logger": SilentLogger(),
                     "progress_hooks": [lambda d: self.extraction_progress_hook(d, cancel_event)],}
@@ -67,7 +84,6 @@ class Downloader:
                 
                 if 'is_live' in video_info and video_info['is_live']: # TODO: ADD LIVESTREAM SUPPORT IN THE FUTURE
                     return "Live streams are not supported.", None, None, None
-                
                 
                 for stream in formats:
                     if stream.get("vcodec") != "none" and stream.get("acodec") == "none":  # Video-only streams
@@ -93,8 +109,11 @@ class Downloader:
                 stream_map["Audio"] = best_audio_stream["format_id"]
                 
                 return resolutions, stream_map, output, duration
-        except Exception as e:
-            return e
+        except tuple(possible_errors.keys()) as e:
+            return possible_errors[type(e)], None, None, None
+        
+        except Exception:
+            return (None,) * 4
     
     def progress_hook(self, d, queue, download_progress, cancel_event):
         if cancel_event.is_set():
@@ -235,6 +254,7 @@ class Gui:
         self.executor = concurrent.futures.ProcessPoolExecutor(max_workers=2)
         self.is_extracting = False
         self.is_downloading = False
+        self.message = None
         self.manager = Manager()
         self.progress_queue = self.manager.Queue()
         self.cancel_event = self.manager.Event()
@@ -289,7 +309,8 @@ class Gui:
                     self.is_extracting = False
                     if self.cancel_event.is_set():
                         self.cancel_event.clear()
-                    self.close_messagebox()
+                    if self.message:
+                        self.close_messagebox()
                     self.download_window(resolutions, stream_map, output_path, duration)
                 except Exception as e:
                     self.status_label.configure(text=e)
@@ -301,11 +322,15 @@ class Gui:
     
     def download_window(self, resolutions, stream_map, output_path, duration):
         if resolutions is None:
-            self.status_label.configure(text="Invalid URL, please try again.")
+            self.status_label.configure(text="An unexpected error occured, please try again.")
             self.download_button.configure(state="normal")
             return
         if resolutions == "Live streams are not supported.":
             self.status_label.configure(text="Live streams are not supported.")
+            self.download_button.configure(state="normal")
+            return
+        if all(_ is None for _ in (stream_map, output_path, duration)):
+            self.status_label.configure(text=resolutions)
             self.download_button.configure(state="normal")
             return
         download_toplevel = tk.CTkToplevel()
@@ -349,7 +374,8 @@ class Gui:
             try:
                 self.is_downloading = False
                 result = future.result()
-                self.close_messagebox()
+                if self.message:
+                    self.close_messagebox()
                 if type(result) is DownloadCancelled:
                     self.cancel_event.clear()
                     self.status_label.configure(text="Download cancelled by user.")
@@ -410,10 +436,9 @@ class Gui:
             self.root.destroy()
     
     def close_messagebox(self):
-        if self.message and self.message.winfo_exists():
+        if self.message.winfo_exists():
             self.message.event_generate("<Escape>")
             self.message_closed = True  # Set the flag to True to indicate that the messagebox has been closed
-            self.close_window = False
             self.message = None
     
 if __name__ == "__main__":
