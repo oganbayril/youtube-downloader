@@ -414,9 +414,10 @@ class Gui:
             self.root.destroy()
     
     def close_messagebox(self):
-        if hasattr(self, "message") and self.message:
+        if self.message.winfo_exists():
             self.message.event_generate("<Escape>")
             self.message_closed = True  # Set the flag to True to indicate that the messagebox has been closed
+            self.close_window = False
             self.message = None
     
 if __name__ == "__main__":
