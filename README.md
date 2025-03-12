@@ -1,3 +1,5 @@
+Youtube downloader that downloads the videos in mp4/mp3 formats by default.
+
 IMPORTANT:
 
 You need to manually install ffmpeg on your computer.
