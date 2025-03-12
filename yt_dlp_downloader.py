@@ -235,7 +235,6 @@ class Gui:
         self.executor = concurrent.futures.ProcessPoolExecutor(max_workers=2)
         self.is_extracting = False
         self.is_downloading = False
-        self.close_window = False
         self.manager = Manager()
         self.progress_queue = self.manager.Queue()
         self.cancel_event = self.manager.Event()
@@ -290,8 +289,7 @@ class Gui:
                     self.is_extracting = False
                     if self.cancel_event.is_set():
                         self.cancel_event.clear()
-                    if self.close_window:
-                        self.close_messagebox()
+                    self.close_messagebox()
                     self.download_window(resolutions, stream_map, output_path, duration)
                 except Exception as e:
                     self.status_label.configure(text=e)
@@ -351,8 +349,7 @@ class Gui:
             try:
                 self.is_downloading = False
                 result = future.result()
-                if self.close_window:
-                    self.close_messagebox()
+                self.close_messagebox()
                 if type(result) is DownloadCancelled:
                     self.cancel_event.clear()
                     self.status_label.configure(text="Download cancelled by user.")
@@ -387,7 +384,6 @@ class Gui:
             self.root.after(100, lambda: self.update_progress(future, queue, stream, output_path))
     
     def close_gui(self):
-        self.close_window = True
         status = {
             "extraction": self.is_extracting,
             "download": self.is_downloading
@@ -414,7 +410,7 @@ class Gui:
             self.root.destroy()
     
     def close_messagebox(self):
-        if self.message.winfo_exists():
+        if self.message and self.message.winfo_exists():
             self.message.event_generate("<Escape>")
             self.message_closed = True  # Set the flag to True to indicate that the messagebox has been closed
             self.close_window = False
