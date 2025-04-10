@@ -59,10 +59,10 @@ class Downloader:
     
     def extract_data(self, url, cancel_event):
         possible_errors = {
-            ydl.utils.DownloadError: "Download error, please check the URL or your internet connection.",
-            ydl.utils.ExtractorError: "Extractor error, this might be due to an unsupported site or a problem with the video.",
-            ydl.utils.RegexNotFoundError: "Regex error, the video URL might be incorrect or the site structure has changed.",
-            ydl.utils.GeoRestrictedError: "Geo-restricted video, this video is not available in your region.",
+            ydl.utils.DownloadError: "Error, please check the URL, internet connection or if there's an age restriction to the video.",
+            ydl.utils.ExtractorError: "Error, this might be due to an unsupported site or a problem with the video.",
+            ydl.utils.RegexNotFoundError: "The video URL might be incorrect or the site structure has changed.",
+            ydl.utils.GeoRestrictedError: "This video is not available in your region.",
                            }
         
         ydl_opts = {"quiet": True,
@@ -74,7 +74,8 @@ class Downloader:
                 video_title = video_info["title"]
                 formats = video_info.get("formats", [])
                 duration = video_info.get("duration") 
-                title = "".join(c if c.isalnum() or c in " _-()" else "_" for c in video_title)
+                allowed_chars = " _-().!,'&[]{}:?" # Characters that aren't alphanumeric that are allowed in the title
+                title = "".join(c if c.isalnum() or c in allowed_chars else "_" for c in video_title)
                 output = f"{download_path}/{title}"          
                 best_audio_stream = None
                 stream_map = {}
