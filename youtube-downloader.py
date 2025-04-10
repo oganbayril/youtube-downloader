@@ -74,7 +74,7 @@ class Downloader:
                 video_title = video_info["title"]
                 formats = video_info.get("formats", [])
                 duration = video_info.get("duration") 
-                allowed_chars = " _-().!,'&[]{}:?" # Characters that aren't alphanumeric that are allowed in the title
+                allowed_chars = " _-().!,'&[]{}" # Characters that aren't alphanumeric that are allowed in the title, you can add more. (<, >, :, ", /, \, |, ?, * aren't supported by windows)
                 title = "".join(c if c.isalnum() or c in allowed_chars else "_" for c in video_title)
                 output = f"{download_path}/{title}"          
                 best_audio_stream = None
