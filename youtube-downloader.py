@@ -74,14 +74,14 @@ class Downloader:
                 video_title = video_info["title"]
                 formats = video_info.get("formats", [])
                 duration = video_info.get("duration") 
-                allowed_chars = " _-().!,'&[]{}:?" # Characters that aren't alphanumeric that are allowed in the title
+                allowed_chars = " _-().!,'&[]{}" # Characters that aren't alphanumeric that are allowed in the title, you can add more. (<, >, :, ", /, \, |, ?, * aren't supported by windows)
                 title = "".join(c if c.isalnum() or c in allowed_chars else "_" for c in video_title)
                 output = f"{download_path}/{title}"          
                 best_audio_stream = None
                 stream_map = {}
                 resolutions = []
                 
-                if 'is_live' in video_info and video_info['is_live']: # TODO: ADD LIVESTREAM SUPPORT IN THE FUTURE
+                if 'is_live' in video_info and video_info['is_live']: # TODO: ADD LIVESTREAM SUPPORT IN THE FUTURE, IF POSSIBLE
                     return "Live streams are not supported.", None, None, None
                 
                 for stream in formats:
@@ -91,14 +91,25 @@ class Downloader:
                             resolution = f"{height}p"
                             resolutions.append(resolution)
                             stream_map[resolution] = stream["format_id"]
+                            
                     elif stream.get("acodec") != "none" and stream.get("vcodec") == "none":  # Audio-only streams
                         abr = stream.get("abr")
-                        # If average bitrate is None, handle it by falling back to the first available stream
-                        if abr is None:
-                            if best_audio_stream is None:  # If no stream has been chosen yet, pick this one
-                                best_audio_stream = stream
+                        language = stream.get("language", "en")
+                        
+                        # Prioritize English or undefined/original language
+                        is_preferred_language = language in ["en", "en-US", None] or language == "und"
+                        
+                        if best_audio_stream is None:
+                            best_audio_stream = stream
                         else:
-                            if best_audio_stream.get("abr") is None or abr > best_audio_stream.get("abr"):
+                            current_lang = best_audio_stream.get("language", "en")
+                            current_is_preferred = current_lang in ["en", "en-US", None] or current_lang == "und"
+                            current_abr = best_audio_stream.get("abr") or 0
+                            new_abr = abr or 0
+                            
+                            # Replace if: new stream is preferred language and current isn't or both same preference level but new has higher bitrate
+                            if (is_preferred_language and not current_is_preferred) or \
+                            (is_preferred_language == current_is_preferred and new_abr > current_abr):
                                 best_audio_stream = stream
                 
                 # Sort video streams by resolution (descending)
@@ -141,7 +152,7 @@ class Downloader:
             except Exception as e:
                 queue.put(e)
 
-    def download_video(self, stream_map, stream, link, output, queue, cancel_event, duration):
+    def download_stream(self, stream_map, stream, link, output, queue, cancel_event, duration):
         try:
             # Download only audio if the stream is an audio stream
             if stream == "Audio":
@@ -364,7 +375,7 @@ class Gui:
         
         def create_future(stream):
             self.is_downloading = True
-            future = self.executor.submit(self.downloader.download_video, stream_map, stream, self.link, output_path, self.progress_queue, self.cancel_event, duration)
+            future = self.executor.submit(self.downloader.download_stream, stream_map, stream, self.link, output_path, self.progress_queue, self.cancel_event, duration)
             self.root.after(100, self.update_progress(future, self.progress_queue, stream, output_path))
     
     def cancel_download(self, cancel_event):
