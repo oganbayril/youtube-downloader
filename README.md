@@ -71,18 +71,35 @@ sudo dnf install ffmpeg
 
 ### Step 2: Run the Application
 
-1. Download or clone this repository
-2. Install [uv](https://docs.astral.sh/uv/) package manager (if not already installed):
-   ```bash
-   # On macOS and Linux:
-   curl -LsSf https://astral.sh/uv/install.sh | sh
-   
-   # On Windows:
-   powershell -c "irm https://astral.sh/uv/install.ps1 | iex"
-   ```
-3. Install dependencies using uv:
+#### Using uv (Recommended)
+1. Make sure you have Python installed on your system
+2. Download or clone this repository to a folder
+3. Install uv if you haven't already:
+   - Visit [uv's official website](https://docs.astral.sh/uv/)
+   - Follow the installation instructions for your operating system
+   - Or use the quick install script:
+     ```bash
+     # On macOS and Linux:
+     curl -LsSf https://astral.sh/uv/install.sh | sh
+     
+     # On Windows:
+     powershell -c "irm https://astral.sh/uv/install.ps1 | iex"
+     ```
+4. Install dependencies:
    ```bash
    uv sync
+   ```
+5. Run the application:
+   ```bash
+   python main.py
+   ```
+
+#### Alternative Installation
+1. Make sure you have Python installed on your system
+2. Download or clone this repository to a folder
+3. Install dependencies manually:
+   ```bash
+   pip install customtkinter>=5.2.2 yt-dlp>=2025.6.9 ctkmessagebox>=2.7
    ```
 4. Run the application:
    ```bash
@@ -142,7 +159,6 @@ If you encounter issues, please check that:
 ## License
 
 This project is licensed under the [MIT License](https://opensource.org/licenses/MIT) - see the [LICENSE](LICENSE) file for details.
-
 You are free to use, modify, and distribute this code for personal and commercial purposes.
 
 ---
