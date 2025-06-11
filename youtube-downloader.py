@@ -415,7 +415,7 @@ class Gui:
                         self.status_label.configure(text=f"Downloading audio...    {progress*100:.2f}%")
                     else:
                         if progress < DOWNLOAD_WEIGHT:
-                            self.status_label.configure(text=f"Downloading audio and video streams seperately...    {progress*100:.2f}%")
+                            self.status_label.configure(text=f"Downloading audio and video streams separately...    {progress*100:.2f}%")
                         elif progress == DOWNLOAD_WEIGHT:
                             self.status_label.configure(text=f"Seperate streams downloaded, waiting to merge...    {progress*100:.2f}%")
                         else:
